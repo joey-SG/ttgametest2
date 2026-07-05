@@ -13,6 +13,10 @@ export interface Body {
   /** 이번 스텝(들)에서 이미 머지 후보로 잡혔는지. 게임 로직이 실제 머지를 처리하고
    * 바디를 제거할 때까지 true로 유지 — "프레임당 바디 1회 머지" 쿨다운을 자연스럽게 보장. */
   pendingMerge: boolean;
+  /** 이번 서브스텝에 바닥 또는 자기보다 아래에 있는 바디와 접촉해 "떠받쳐지고" 있는지.
+   * sleep 스냅은 이 플래그가 true인 바디에만 적용해, 자유낙하 중인 바디가 중력을
+   * 상쇄당해 공중에 뜨는 것을 방지한다. 매 서브스텝 시작 시 초기화됨. */
+  supported: boolean;
 }
 
 export interface Bounds {
@@ -45,7 +49,7 @@ export function createBody(
   vx = 0,
   vy = 0
 ): Body {
-  return { id: nextBodyId++, tier, x, y, vx, vy, radius, pendingMerge: false };
+  return { id: nextBodyId++, tier, x, y, vx, vy, radius, pendingMerge: false, supported: false };
 }
 
 function mass(body: Body): number {
@@ -64,12 +68,18 @@ export function stepWorld(
   const subDt = dt / cfg.substeps;
 
   for (let s = 0; s < cfg.substeps; s++) {
+    resetSupport(bodies);
     integrate(bodies, subDt, cfg.gravity);
-    resolveWalls(bodies, bounds, subDt, cfg);
+    resolveWalls(bodies, bounds, cfg);
     resolveCollisions(bodies, cfg, merges);
+    applySleep(bodies, cfg);
   }
 
   return merges;
+}
+
+function resetSupport(bodies: Body[]): void {
+  for (const b of bodies) b.supported = false;
 }
 
 function integrate(bodies: Body[], dt: number, gravity: number): void {
@@ -80,7 +90,7 @@ function integrate(bodies: Body[], dt: number, gravity: number): void {
   }
 }
 
-function resolveWalls(bodies: Body[], bounds: Bounds, _dt: number, cfg: PhysicsConfig): void {
+function resolveWalls(bodies: Body[], bounds: Bounds, cfg: PhysicsConfig): void {
   for (const b of bodies) {
     // 왼쪽 벽
     if (b.x - b.radius < 0) {
@@ -96,15 +106,14 @@ function resolveWalls(bodies: Body[], bounds: Bounds, _dt: number, cfg: PhysicsC
       if (b.vx > 0) b.vx = -b.vx * cfg.restitution;
       b.vy *= 1 - cfg.friction;
     }
-    // 바닥
+    // 바닥 — 좌우 벽과 달리 중력에 대한 실질적 지지대이므로 supported로 표시.
     if (b.y + b.radius > bounds.height) {
       const penetration = b.y + b.radius - bounds.height;
       b.y -= correctionAmount(penetration, cfg);
       if (b.vy > 0) b.vy = -b.vy * cfg.restitution;
       b.vx *= 1 - cfg.friction;
+      b.supported = true;
     }
-
-    snapSleep(b, cfg);
   }
 }
 
@@ -113,9 +122,14 @@ function correctionAmount(penetration: number, cfg: PhysicsConfig): number {
   return over > 0 ? over * cfg.positionCorrectionPercent : 0;
 }
 
-function snapSleep(b: Body, cfg: PhysicsConfig): void {
-  if (Math.abs(b.vx) < cfg.sleepVelocity) b.vx = 0;
-  if (Math.abs(b.vy) < cfg.sleepVelocity) b.vy = 0;
+/** supported로 표시된(바닥 또는 아래쪽 바디에 떠받쳐진) 바디에 한해 잔여 속도를 0으로
+ * 스냅한다. 자유낙하 중인 바디는 절대 스냅하지 않아야 중력이 정상적으로 누적된다. */
+function applySleep(bodies: Body[], cfg: PhysicsConfig): void {
+  for (const b of bodies) {
+    if (!b.supported) continue;
+    if (Math.abs(b.vx) < cfg.sleepVelocity) b.vx = 0;
+    if (Math.abs(b.vy) < cfg.sleepVelocity) b.vy = 0;
+  }
 }
 
 function resolveCollisions(bodies: Body[], cfg: PhysicsConfig, merges: MergePair[]): void {
@@ -141,6 +155,14 @@ function resolveCollisions(bodies: Body[], cfg: PhysicsConfig, merges: MergePair
       const nx = dx / dist;
       const ny = dy / dist;
       const penetration = radiusSum - dist;
+
+      // 접촉한 두 바디 중 위쪽(y가 작은 쪽)은 아래쪽 바디에 떠받쳐지고 있는 것으로 표시.
+      // ny > 0 은 b가 a보다 아래(y가 큼)라는 뜻이므로 a가 위, ny < 0이면 b가 위.
+      if (ny > 0) {
+        a.supported = true;
+      } else if (ny < 0) {
+        b.supported = true;
+      }
 
       // 위치 보정 (역질량 비례 분배)
       const invMassA = 1 / mass(a);
@@ -180,9 +202,6 @@ function resolveCollisions(bodies: Body[], cfg: PhysicsConfig, merges: MergePair
         b.vx += jt * tx * invMassB;
         b.vy += jt * ty * invMassB;
       }
-
-      snapSleep(a, cfg);
-      snapSleep(b, cfg);
 
       // 머지 후보 등록: 같은 티어 접촉, 둘 다 아직 머지 대기중이 아닐 때만
       if (a.tier === b.tier && !a.pendingMerge && !b.pendingMerge) {

@@ -111,6 +111,7 @@ export class Game {
       aboveLineSince: null,
     };
     this.bodies.push(body);
+    this.bestTierReached = Math.max(this.bestTierReached, this.currentTier);
     this.dropLockUntil = now + DROP.cooldownMs;
 
     this.currentTier = this.nextTier;
