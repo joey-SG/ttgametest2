@@ -73,9 +73,21 @@ export function stepWorld(
     integrate(bodies, subDt, cfg.gravity);
     resolveWalls(bodies, bounds, cfg);
     resolveCollisions(bodies, cfg, merges);
+    // 안전망: 극단적 질량비(예: 블랙홀이 작은 천체 더미를 짓누르는 경우) 원-원 위치
+    // 보정이 벽 보정보다 늦게 실행돼 가벼운 바디를 경계 밖으로 밀어낼 수 있다.
+    // 부드러운 반발/보정과 무관하게 위치만 강제로 경계 안쪽에 묶어 관통을 원천 차단.
+    clampBounds(bodies, bounds);
   }
 
   return merges;
+}
+
+function clampBounds(bodies: Body[], bounds: Bounds): void {
+  for (const b of bodies) {
+    if (b.x - b.radius < 0) b.x = b.radius;
+    if (b.x + b.radius > bounds.width) b.x = bounds.width - b.radius;
+    if (b.y + b.radius > bounds.height) b.y = bounds.height - b.radius;
+  }
 }
 
 function integrate(bodies: Body[], dt: number, gravity: number): void {

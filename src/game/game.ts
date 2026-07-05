@@ -4,6 +4,8 @@ import {
   DROP,
   DROP_POOL_IDS,
   DROP_POOL_WEIGHTS,
+  FX,
+  HIGH_TIER_THRESHOLD,
   LAST_TIER_ID,
   OVERFLOW,
   PHYSICS,
@@ -15,9 +17,13 @@ import type { Platform } from '../platform/types';
 
 export type GameState = 'title' | 'playing' | 'gameover';
 
-/** 물리 바디에 게임 전용 필드(오버플로우 체류 타이머)를 얹은 확장 타입. */
+/** 물리 바디에 게임 전용 필드(오버플로우 타이머·juice 애니메이션 기준시각)를 얹은 확장 타입. */
 export interface GameBody extends Body {
   aboveLineSince: number | null;
+  /** 생성(드롭 또는 머지) 시각 — 렌더의 스케일 펀치(pop) 애니메이션 기준. */
+  spawnedAt: number;
+  /** 마지막 착지/급감속 감지 시각 — 렌더의 스쿼시 애니메이션 기준. null이면 없음. */
+  impactAt: number | null;
 }
 
 export interface MergeFx {
@@ -25,6 +31,13 @@ export interface MergeFx {
   x: number;
   y: number;
   bigBang: boolean;
+  chainStage: number;
+}
+
+export interface DropFx {
+  x: number;
+  y: number;
+  tier: number;
 }
 
 export interface ChainDisplay {
@@ -64,10 +77,15 @@ export class Game {
   private dropLockUntil = 0;
   private lastMergeAt = -Infinity;
   private chainStage = 0;
+  private lastWarningPulseAt = -Infinity;
+  private readonly prevVy = new Map<number, number>();
 
-  /** 렌더가 소비할 수 있는 1회성 이벤트 큐 (머지 이펙트 트리거용, M2에서 본격 활용). */
+  /** 렌더/fx 오케스트레이터(main.ts)가 매 프레임 드레인하는 1회성 이벤트 큐. */
   readonly mergeEvents: MergeFx[] = [];
+  readonly dropEvents: DropFx[] = [];
   overflowWarning = false;
+  /** 오버플로우 경고 반복 펄스(햅틱+비프)가 울릴 때마다 증가 — main.ts가 변화를 감지해 사운드 재생. */
+  warningPulseCount = 0;
 
   constructor(private platform: Platform) {}
 
@@ -85,8 +103,11 @@ export class Game {
     this.bestTierReached = 0;
     this.chainStage = 0;
     this.lastMergeAt = -Infinity;
+    this.lastWarningPulseAt = -Infinity;
     this.dropLockUntil = 0;
     this.overflowWarning = false;
+    this.mergeEvents.length = 0;
+    this.dropEvents.length = 0;
     this.currentTier = pickDropTier();
     this.nextTier = pickDropTier();
     this.state = 'playing';
@@ -109,10 +130,13 @@ export class Game {
     const body: GameBody = {
       ...createBody(this.currentTier, tier.radius, this.aimX, DROP.spawnY),
       aboveLineSince: null,
+      spawnedAt: now,
+      impactAt: null,
     };
     this.bodies.push(body);
     this.bestTierReached = Math.max(this.bestTierReached, this.currentTier);
     this.dropLockUntil = now + DROP.cooldownMs;
+    this.dropEvents.push({ x: body.x, y: body.y, tier: body.tier });
 
     this.currentTier = this.nextTier;
     this.nextTier = pickDropTier();
@@ -123,7 +147,19 @@ export class Game {
   update(now: number, dt: number): void {
     if (this.state !== 'playing') return;
 
+    // 착지/급감속 감지용: 물리 스텝 전 속도를 기록해두고 스텝 후와 비교한다.
+    this.prevVy.clear();
+    for (const body of this.bodies) this.prevVy.set(body.id, body.vy);
+
     const merges = stepWorld(this.bodies, bounds, dt, PHYSICS);
+
+    for (const body of this.bodies) {
+      const before = this.prevVy.get(body.id);
+      if (before !== undefined && before > FX.impactVyThreshold && body.vy < before * 0.35) {
+        body.impactAt = now;
+      }
+    }
+
     this.processMerges(merges, now);
     this.updateOverflow(now);
   }
@@ -157,7 +193,7 @@ export class Game {
       if (a.tier === LAST_TIER_ID) {
         // 블랙홀 + 블랙홀 = 빅뱅: 둘 다 소멸, 새 바디 없음, 보너스 점수.
         this.score += BIG_BANG_BONUS;
-        this.mergeEvents.push({ tier: a.tier, x: midX, y: midY, bigBang: true });
+        this.mergeEvents.push({ tier: a.tier, x: midX, y: midY, bigBang: true, chainStage: this.chainStage });
         this.platform.haptic('combo');
         continue;
       }
@@ -167,13 +203,15 @@ export class Game {
       const newBody: GameBody = {
         ...createBody(newTier, newTierConfig.radius, midX, midY, avgVx, avgVy),
         aboveLineSince: null,
+        spawnedAt: now,
+        impactAt: null,
       };
       this.bodies.push(newBody);
 
       this.score += newTierConfig.score * multiplier;
       this.bestTierReached = Math.max(this.bestTierReached, newTier);
-      this.mergeEvents.push({ tier: newTier, x: midX, y: midY, bigBang: false });
-      this.platform.haptic(this.chainStage >= 3 || newTier >= 7 ? 'combo' : 'success');
+      this.mergeEvents.push({ tier: newTier, x: midX, y: midY, bigBang: false, chainStage: this.chainStage });
+      this.platform.haptic(this.chainStage >= 3 || newTier >= HIGH_TIER_THRESHOLD ? 'combo' : 'success');
     }
 
     this.bodies = this.bodies.filter((body) => !removedIds.has(body.id));
@@ -192,6 +230,14 @@ export class Game {
     }
 
     this.overflowWarning = worstDuration >= OVERFLOW.warnAtMs;
+
+    // 경고 중엔 일정 간격으로 짧은 위험 햅틱을 반복 (docs/02 §9). 사운드 비프는 main.ts가
+    // warningPulseCount 변화를 감지해 재생 — 여기선 게임 로직만 담당(오디오 직접 호출 금지).
+    if (this.overflowWarning && now - this.lastWarningPulseAt >= FX.warningPulseIntervalMs) {
+      this.lastWarningPulseAt = now;
+      this.warningPulseCount += 1;
+      this.platform.haptic('fail');
+    }
 
     if (worstDuration >= OVERFLOW.gameOverMs) {
       this.triggerGameOver();

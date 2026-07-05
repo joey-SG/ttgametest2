@@ -1,7 +1,18 @@
-import { PHYSICS, WORLD } from './config';
-import { Game } from './game/game';
+import { CHAIN_COLORS, FX, HIGH_TIER_THRESHOLD, PHYSICS, TIERS, WORLD } from './config';
+import { Game, type DropFx, type MergeFx } from './game/game';
 import { createWebPlatform } from './platform/web';
 import { draw } from './render';
+import {
+  ensureAudioResumed,
+  playBigBang,
+  playDropTick,
+  playGameOverBoom,
+  playMergeSound,
+  playWarningBeep,
+} from './audio';
+import { spawnBurst, spawnRing, updateParticles } from './fx/particles';
+import { triggerShake, updateShake } from './fx/shake';
+import { triggerEdgeGlow, triggerWhiteout, updateGlow } from './fx/glow';
 
 const canvasEl = document.getElementById('game-canvas');
 if (!(canvasEl instanceof HTMLCanvasElement)) {
@@ -92,6 +103,7 @@ function handlePointerUp(): void {
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   canvas.setPointerCapture(e.pointerId);
+  ensureAudioResumed(); // iOS는 사용자 제스처 안에서 resume()해야 소리가 난다 (docs/03 §3.4).
   handlePointerDown(e.clientX, e.clientY);
 });
 canvas.addEventListener('pointermove', (e) => {
@@ -106,6 +118,39 @@ canvas.addEventListener('pointercancel', () => {
   dragging = false;
 });
 
+// 게임 로직(game.ts)은 물리·점수·상태만 다루고 플랫폼/오디오 API를 직접 호출하지 않는다.
+// mergeEvents/dropEvents 큐를 여기서 드레인해 파티클·셰이크·글로우·사운드를 트리거한다.
+
+function processMergeFx(fx: MergeFx): void {
+  const tier = TIERS[fx.tier];
+
+  if (fx.bigBang) {
+    spawnBurst(fx.x, fx.y, '#ffffff', FX.particleBurstCount * 2, FX.particleBurstSpeed * 1.6, FX.particleLifeSec * 1.4);
+    spawnRing(fx.x, fx.y, '#ffffff', tier.radius * FX.ringRadiusScale * 1.6, FX.ringLifeSec * 1.6);
+    triggerWhiteout(FX.edgeGlowBigBangIntensity);
+    triggerShake(FX.shakeBigBang);
+    playBigBang();
+    return;
+  }
+
+  spawnBurst(fx.x, fx.y, tier.color, FX.particleBurstCount, FX.particleBurstSpeed, FX.particleLifeSec);
+
+  const isChain = fx.chainStage >= 2;
+  const glowColor = isChain ? CHAIN_COLORS[Math.min(fx.chainStage, CHAIN_COLORS.length) - 1] : tier.color;
+  triggerEdgeGlow(glowColor, isChain ? FX.edgeGlowChainIntensity : FX.edgeGlowMergeIntensity);
+
+  if (fx.tier >= HIGH_TIER_THRESHOLD) {
+    triggerShake(FX.shakeHighTier);
+    spawnRing(fx.x, fx.y, tier.color, tier.radius * FX.ringRadiusScale, FX.ringLifeSec);
+  }
+
+  playMergeSound(fx.tier, fx.chainStage);
+}
+
+function processDropFx(_fx: DropFx): void {
+  playDropTick();
+}
+
 // 고정 타임스텝 누적기 (Fix Your Timestep 패턴) — 프레임 변동을 흡수해 물리를 결정적으로 유지.
 const FIXED_DT_MS = PHYSICS.fixedDt * 1000;
 let lastFrameTime = performance.now();
@@ -116,12 +161,33 @@ function frame(now: number): void {
   lastFrameTime = now;
   accumulatorMs += frameDt;
 
+  const prevState = game.state;
+  const prevWarningPulseCount = game.warningPulseCount;
+
   let steps = 0;
   while (accumulatorMs >= FIXED_DT_MS && steps < PHYSICS.maxStepsPerFrame) {
     game.update(now, PHYSICS.fixedDt);
     accumulatorMs -= FIXED_DT_MS;
     steps++;
   }
+
+  while (game.mergeEvents.length > 0) {
+    processMergeFx(game.mergeEvents.shift()!);
+  }
+  while (game.dropEvents.length > 0) {
+    processDropFx(game.dropEvents.shift()!);
+  }
+  if (game.warningPulseCount !== prevWarningPulseCount) {
+    playWarningBeep();
+  }
+  if (prevState === 'playing' && game.state === 'gameover') {
+    playGameOverBoom();
+  }
+
+  const frameDtSec = frameDt / 1000;
+  updateParticles(frameDtSec);
+  updateShake(frameDtSec);
+  updateGlow(frameDtSec);
 
   draw(ctx, game, now);
   requestAnimationFrame(frame);

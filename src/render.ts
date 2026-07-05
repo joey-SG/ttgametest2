@@ -1,9 +1,12 @@
-import { TIERS, WORLD } from './config';
+import { CHAIN_COLORS, FX, LAST_TIER_ID, TIERS, WORLD } from './config';
 import type { Game } from './game/game';
 import type { GameBody } from './game/game';
+import { drawParticles } from './fx/particles';
+import { getShakeOffset } from './fx/shake';
+import { getEdgeGlow, getWhiteout } from './fx/glow';
 
-// M1은 기능 검증용 단순 렌더 (절차 그라디언트 원 + 티어 색 구분).
-// 표정·파티클·글로우 등 juice는 M2에서 별도 fx 모듈로 추가한다.
+// Canvas 2D 렌더. 절차 그라디언트 원 + 티어 색 구분(M1) 위에 표정·티어 시그니처·
+// 파티클/글로우/셰이크·트레일·스쿼시 등 juice를 얹는다(M2). 이미지 에셋 0.
 
 interface Star {
   x: number;
@@ -21,22 +24,40 @@ const stars: Star[] = Array.from({ length: STAR_COUNT }, () => ({
 }));
 
 export function draw(ctx: CanvasRenderingContext2D, game: Game, now: number): void {
+  const shake = getShakeOffset();
+  ctx.save();
+  ctx.translate(shake.x, shake.y);
+
   drawBackground(ctx);
 
   if (game.state === 'title') {
     drawTitle(ctx, game);
+    ctx.restore();
     return;
   }
 
+  drawOverflowHeartbeat(ctx, game, now);
   drawOverflowLine(ctx, game, now);
+
   for (const body of game.bodies) {
-    drawBody(ctx, body);
+    drawTrail(ctx, body);
   }
+  for (const body of game.bodies) {
+    drawBody(ctx, body, now);
+  }
+
+  drawParticles(ctx);
+  drawEdgeGlow(ctx);
+  drawWhiteout(ctx);
+
+  drawLadder(ctx, game);
   drawHud(ctx, game, now);
 
   if (game.state === 'gameover') {
     drawGameOver(ctx, game);
   }
+
+  ctx.restore();
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D): void {
@@ -68,27 +89,238 @@ function drawOverflowLine(ctx: CanvasRenderingContext2D, game: Game, now: number
   ctx.restore();
 }
 
-function drawBody(ctx: CanvasRenderingContext2D, body: GameBody): void {
-  const tier = TIERS[body.tier];
+/** 오버플로우 경고 중 화면 전체에 심장박동처럼 붉게 펄스 (시간의 순수 함수, 상태 불필요). */
+function drawOverflowHeartbeat(ctx: CanvasRenderingContext2D, game: Game, now: number): void {
+  if (!game.overflowWarning) return;
+  const pulse = (Math.sin(now / 180) + 1) / 2;
+  ctx.save();
+  ctx.globalAlpha = 0.12 + pulse * 0.16;
   const gradient = ctx.createRadialGradient(
-    body.x - body.radius * 0.35,
-    body.y - body.radius * 0.35,
+    WORLD.width / 2,
+    WORLD.height / 2,
+    WORLD.height * 0.25,
+    WORLD.width / 2,
+    WORLD.height / 2,
+    WORLD.height * 0.78
+  );
+  gradient.addColorStop(0, 'rgba(255,30,30,0)');
+  gradient.addColorStop(1, 'rgba(255,30,30,0.9)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.restore();
+}
+
+/** 빠르게 움직이는 바디 뒤로 옅어지는 잔상 몇 개 — 히스토리 버퍼 없이 현재 속도만으로 근사. */
+function drawTrail(ctx: CanvasRenderingContext2D, body: GameBody): void {
+  const speed = Math.hypot(body.vx, body.vy);
+  if (speed < 150) return;
+
+  const dirX = -body.vx / speed;
+  const dirY = -body.vy / speed;
+  const steps = 3;
+  const speedAlpha = Math.min(1, speed / 700);
+
+  for (let i = 1; i <= steps; i++) {
+    const dist = i * body.radius * 0.4;
+    const alpha = speedAlpha * 0.3 * (1 - i / (steps + 1));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(body.x + dirX * dist, body.y + dirY * dist, body.radius * (1 - i * 0.15), 0, Math.PI * 2);
+    ctx.fillStyle = TIERS[body.tier].color;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawBody(ctx: CanvasRenderingContext2D, body: GameBody, now: number): void {
+  const tier = TIERS[body.tier];
+  const pop = popScale(now - body.spawnedAt);
+  const squash = body.impactAt !== null ? squashFactors(now - body.impactAt) : { sx: 1, sy: 1 };
+
+  ctx.save();
+  ctx.translate(body.x, body.y);
+  ctx.scale(pop * squash.sx, pop * squash.sy);
+
+  drawTierSignature(ctx, body, now);
+
+  const gradient = ctx.createRadialGradient(
+    -body.radius * 0.35,
+    -body.radius * 0.35,
     body.radius * 0.1,
-    body.x,
-    body.y,
+    0,
+    0,
     body.radius
   );
   gradient.addColorStop(0, lighten(tier.color, 0.35));
   gradient.addColorStop(1, tier.color);
 
-  ctx.save();
   ctx.beginPath();
-  ctx.arc(body.x, body.y, body.radius, 0, Math.PI * 2);
+  ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
   ctx.fillStyle = gradient;
   ctx.fill();
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
   ctx.stroke();
+
+  drawFace(ctx, body.radius, body.tier === LAST_TIER_ID);
+
+  ctx.restore();
+}
+
+/** 점 눈 + 입 커브 — Suika의 "귀여움" 요인을 절차 드로잉으로 재현 (docs/02 §6). */
+function drawFace(ctx: CanvasRenderingContext2D, radius: number, light: boolean): void {
+  const faceColor = light ? 'rgba(255,255,255,0.85)' : 'rgba(10,10,20,0.85)';
+  const eyeOffsetX = radius * 0.32;
+  const eyeOffsetY = -radius * 0.08;
+  const eyeRadius = Math.max(1.1, radius * 0.09);
+
+  ctx.fillStyle = faceColor;
+  ctx.beginPath();
+  ctx.arc(-eyeOffsetX, eyeOffsetY, eyeRadius, 0, Math.PI * 2);
+  ctx.arc(eyeOffsetX, eyeOffsetY, eyeRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  const mouthY = radius * 0.18;
+  const mouthWidth = radius * 0.26;
+  ctx.beginPath();
+  ctx.strokeStyle = faceColor;
+  ctx.lineWidth = Math.max(1, radius * 0.06);
+  ctx.lineCap = 'round';
+  ctx.moveTo(-mouthWidth, mouthY);
+  ctx.quadraticCurveTo(0, mouthY + radius * 0.22, mouthWidth, mouthY);
+  ctx.stroke();
+}
+
+/** 티어 시그니처(단순 도형): 토성 고리·태양 코로나·적색거성 펄스·블랙홀 강착원반 (docs/02 §6). */
+function drawTierSignature(ctx: CanvasRenderingContext2D, body: GameBody, now: number): void {
+  switch (body.tier) {
+    case 7: {
+      // 토성 고리
+      ctx.save();
+      ctx.rotate(-0.35);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, body.radius * 1.7, body.radius * 0.45, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(232,192,120,0.55)';
+      ctx.lineWidth = body.radius * 0.14;
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 8: {
+      // 태양 코로나 — 완만하게 숨쉬는 글로우
+      const pulse = 1 + Math.sin(now / 500) * 0.06;
+      const glowRadius = body.radius * 1.8 * pulse;
+      const gradient = ctx.createRadialGradient(0, 0, body.radius * 0.7, 0, 0, glowRadius);
+      gradient.addColorStop(0, 'rgba(255,207,77,0.45)');
+      gradient.addColorStop(1, 'rgba(255,207,77,0)');
+      ctx.beginPath();
+      ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      break;
+    }
+    case 9: {
+      // 적색거성 — 더 빠른 펄스
+      const pulse = 1 + Math.sin(now / 320) * 0.1;
+      const glowRadius = body.radius * 1.4 * pulse;
+      const gradient = ctx.createRadialGradient(0, 0, body.radius * 0.8, 0, 0, glowRadius);
+      gradient.addColorStop(0, 'rgba(255,107,77,0.4)');
+      gradient.addColorStop(1, 'rgba(255,107,77,0)');
+      ctx.beginPath();
+      ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      break;
+    }
+    case 10: {
+      // 블랙홀 강착원반 — 서서히 회전
+      const angle = (now / 4000) % Math.PI;
+      ctx.save();
+      ctx.rotate(angle);
+      const diskGradient = ctx.createLinearGradient(-body.radius * 1.9, 0, body.radius * 1.9, 0);
+      diskGradient.addColorStop(0, 'rgba(255,180,90,0)');
+      diskGradient.addColorStop(0.5, 'rgba(255,200,120,0.85)');
+      diskGradient.addColorStop(1, 'rgba(255,180,90,0)');
+      ctx.beginPath();
+      ctx.ellipse(0, 0, body.radius * 1.9, body.radius * 0.5, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = diskGradient;
+      ctx.lineWidth = body.radius * 0.16;
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** 머지로 생성된 새 천체의 스케일 펀치(팝) — 감쇠 진동으로 살짝 오버슈트 후 1로 수렴. */
+function popScale(elapsedMs: number): number {
+  if (elapsedMs < 0 || elapsedMs >= FX.popDurationMs) return 1;
+  const t = elapsedMs / FX.popDurationMs;
+  const damp = Math.exp(-t * 6);
+  return 1 + damp * Math.sin(t * Math.PI * 2.2) * 0.25;
+}
+
+/** 착지/급감속 시 미세 스쿼시(가로로 눌리고 세로로 펴짐) — 감쇠 후 1로 수렴. */
+function squashFactors(elapsedMs: number): { sx: number; sy: number } {
+  if (elapsedMs < 0 || elapsedMs >= FX.squashDurationMs) return { sx: 1, sy: 1 };
+  const t = elapsedMs / FX.squashDurationMs;
+  const damp = Math.exp(-t * 5);
+  const amount = damp * Math.sin(t * Math.PI) * 0.22;
+  return { sx: 1 + amount, sy: 1 - amount };
+}
+
+function drawEdgeGlow(ctx: CanvasRenderingContext2D): void {
+  const glow = getEdgeGlow();
+  if (glow.intensity <= 0.01) return;
+  ctx.save();
+  const gradient = ctx.createRadialGradient(
+    WORLD.width / 2,
+    WORLD.height / 2,
+    Math.min(WORLD.width, WORLD.height) * 0.3,
+    WORLD.width / 2,
+    WORLD.height / 2,
+    Math.max(WORLD.width, WORLD.height) * 0.75
+  );
+  gradient.addColorStop(0, hexToRgba(glow.color, 0));
+  gradient.addColorStop(1, hexToRgba(glow.color, Math.min(1, glow.intensity) * 0.6));
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.restore();
+}
+
+function drawWhiteout(ctx: CanvasRenderingContext2D): void {
+  const whiteout = getWhiteout();
+  if (whiteout <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, whiteout);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.restore();
+}
+
+/** 진화 사다리 미니 UI — 화면 왼쪽에 작게, 도달한 티어를 밝혀 표시 (docs/02 §10). */
+function drawLadder(ctx: CanvasRenderingContext2D, game: Game): void {
+  const x = 14;
+  const spacing = 15;
+  const topY = WORLD.height * 0.36;
+
+  ctx.save();
+  for (let tierId = LAST_TIER_ID; tierId >= 0; tierId--) {
+    const y = topY + (LAST_TIER_ID - tierId) * spacing;
+    const reached = tierId <= game.bestTierReached;
+    ctx.globalAlpha = reached ? 0.9 : 0.22;
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = TIERS[tierId].color;
+    ctx.fill();
+    // 미도달 상태에도 옅은 테두리를 둬서 블랙홀처럼 어두운 색이 배경에 묻히지 않게 한다.
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = reached ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.25)';
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -106,7 +338,7 @@ function drawHud(ctx: CanvasRenderingContext2D, game: Game, now: number): void {
   const chain = game.currentChainDisplay(now);
   if (chain) {
     ctx.font = '600 16px system-ui, -apple-system, sans-serif';
-    ctx.fillStyle = '#ffcf4d';
+    ctx.fillStyle = chainColor(chain.stage);
     ctx.textAlign = 'center';
     ctx.fillText(`체인 x${chain.multiplier}`, WORLD.width / 2, 12);
     ctx.textAlign = 'left';
@@ -185,13 +417,29 @@ function drawGameOver(ctx: CanvasRenderingContext2D, game: Game): void {
   ctx.restore();
 }
 
+function chainColor(stage: number): string {
+  const idx = Math.min(stage, CHAIN_COLORS.length) - 1;
+  return CHAIN_COLORS[idx];
+}
+
 function lighten(hex: string, amount: number): string {
-  const value = hex.replace('#', '');
-  const r = parseInt(value.substring(0, 2), 16);
-  const g = parseInt(value.substring(2, 4), 16);
-  const b = parseInt(value.substring(4, 6), 16);
+  const { r, g, b } = hexToRgb(hex);
   const lr = Math.round(r + (255 - r) * amount);
   const lg = Math.round(g + (255 - g) * amount);
   const lb = Math.round(b + (255 - b) * amount);
   return `rgb(${lr}, ${lg}, ${lb})`;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const value = hex.replace('#', '');
+  return {
+    r: parseInt(value.substring(0, 2), 16),
+    g: parseInt(value.substring(2, 4), 16),
+    b: parseInt(value.substring(4, 6), 16),
+  };
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

@@ -64,6 +64,31 @@ export const OVERFLOW = {
 
 export const BIG_BANG_BONUS = 500;
 
+// 고티어 판정 임계값(docs/02 §7 "고티어 머지(8+)") — 1-indexed 티어 8(토성) 이상 =
+// 0-indexed 티어 7 이상. juice(셰이크·링·강한 햅틱) 트리거에 공용으로 쓴다.
+export const HIGH_TIER_THRESHOLD = 7;
+
+// juice(이펙트·사운드) 타이밍/강도 상수 (docs/02 §7~§9).
+export const FX = {
+  popDurationMs: 220, // 머지로 생성된 새 천체의 스케일 펀치 지속시간
+  squashDurationMs: 150, // 착지 스쿼시 지속시간
+  impactVyThreshold: 220, // 이 이상 속도로 낙하하다 급감하면 "착지"로 간주(스쿼시 트리거)
+  particleBurstCount: 14,
+  particleBurstSpeed: 140,
+  particleLifeSec: 0.5,
+  ringLifeSec: 0.45,
+  ringRadiusScale: 2.2, // 링 최대 반지름 = 머지된 천체 반지름 × 이 값
+  shakeHighTier: 10, // 고티어 머지 셰이크 강도(월드 단위)
+  shakeBigBang: 22, // 빅뱅 셰이크 강도
+  edgeGlowMergeIntensity: 0.3,
+  edgeGlowChainIntensity: 0.5,
+  edgeGlowBigBangIntensity: 1,
+  warningPulseIntervalMs: 550, // 오버플로우 경고 반복 햅틱/비프 간격
+};
+
+// 체인 단계별(1/2/3/4+) 배지·글로우 색 — 단계가 오를수록 붉게 이동.
+export const CHAIN_COLORS = ['#ffcf4d', '#ff9f4d', '#ff6b4d', '#ff3d5c'];
+
 export const STORAGE_KEYS = {
   highScore: 'nova.highscore',
   stats: 'nova.stats',

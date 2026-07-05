@@ -17,6 +17,47 @@ function vibratePattern(kind: HapticKind): number | number[] {
   }
 }
 
+// iOS Safari는 Vibration API가 없다. <input type="checkbox" switch>를 연결된
+// <label>의 click()으로 토글하면 시스템 햅틱이 울리는 트릭을 쓴다 (docs/03 §3.2,
+// iOS 17.4~26.4 확인, 26.5에서 패치돼도 실패 시 무해한 no-op).
+// ⚠️ label.click()은 진짜 클릭처럼 버블되는 합성 이벤트를 만든다 — 게임의 전역 탭
+// 리스너까지 도달하면 유령 입력이 되므로 캡처 단계에서 반드시 stopPropagation한다.
+let iosHapticLabel: HTMLLabelElement | null = null;
+let iosHapticSetupAttempted = false;
+
+function setupIOSHapticElement(): HTMLLabelElement | null {
+  if (iosHapticSetupAttempted) return iosHapticLabel;
+  iosHapticSetupAttempted = true;
+  if (typeof document === 'undefined') return null;
+  try {
+    const label = document.createElement('label');
+    label.style.cssText = 'position:fixed;width:0;height:0;overflow:hidden;pointer-events:none;opacity:0;';
+    label.ariaHidden = 'true';
+    label.addEventListener('click', (e) => e.stopPropagation(), true);
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.setAttribute('switch', '');
+    label.appendChild(input);
+
+    document.body.appendChild(label);
+    iosHapticLabel = label;
+  } catch {
+    iosHapticLabel = null;
+  }
+  return iosHapticLabel;
+}
+
+function triggerIOSHaptic(kind: HapticKind): void {
+  const label = setupIOSHapticElement();
+  if (!label) return;
+  label.click();
+  // 강한 이벤트는 짧은 간격을 두고 한 번 더 토글해 세기를 흉내낸다.
+  if (kind === 'combo' || kind === 'fail') {
+    setTimeout(() => label.click(), 70);
+  }
+}
+
 export function createWebPlatform(): Platform {
   return {
     async showRewardedAd(_placement) {
@@ -31,9 +72,8 @@ export function createWebPlatform(): Platform {
           navigator.vibrate(vibratePattern(kind));
           return;
         }
-        // iOS Safari는 Vibration API 미지원. checkbox+label.click() 토글 트릭
-        // (docs/03 §3.2, stopPropagation 필수)은 juice 패스(M2)에서 DOM 요소와 함께 구현한다.
-        // 그때까지는 조용히 no-op — 햅틱은 향상이지 필수 의존이 아니다.
+        // iOS Safari 폴백. 둘 다 미지원이면 triggerIOSHaptic 내부에서 조용히 no-op.
+        triggerIOSHaptic(kind);
       } catch {
         // 향상 기능이므로 실패는 무시한다.
       }
