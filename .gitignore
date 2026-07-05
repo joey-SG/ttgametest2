@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-ssr/
+
+# local env
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# OMC session/state data
+.omc/
+
+# editor
+.vscode/
+*.local
