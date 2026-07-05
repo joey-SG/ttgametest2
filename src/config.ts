@@ -49,8 +49,7 @@ export const PHYSICS = {
   restitution: 0.15, // 낮은 반발계수
   friction: 0.06, // 접선(마찰) 감쇠 계수
   positionCorrectionPercent: 0.8, // 겹침 보정 비율
-  positionSlop: 0.4, // 허용 침투량 (지터 방지)
-  sleepVelocity: 6, // 이보다 느리면 0으로 스냅 (지터 방지)
+  positionSlop: 0.4, // 허용 침투량 (지터 방지, 낮은 반발계수와 함께 정착 안정성 담당)
 };
 
 export const CHAIN = {
