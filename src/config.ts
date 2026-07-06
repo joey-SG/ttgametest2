@@ -94,3 +94,8 @@ export const STORAGE_KEYS = {
   stats: 'nova.stats',
   tutorialDone: 'nova.tutorialDone',
 };
+
+// 웹 보상형 광고 폴백 (docs/03 §3.1) — 3초 카운트다운 오버레이.
+export const AD = {
+  fallbackCountdownSec: 3,
+};

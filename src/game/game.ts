@@ -9,11 +9,22 @@ import {
   LAST_TIER_ID,
   OVERFLOW,
   PHYSICS,
+  STORAGE_KEYS,
   TIERS,
   WORLD,
 } from '../config';
 import { createBody, stepWorld, type Body } from './physics';
 import type { Platform } from '../platform/types';
+import { emptyStats, loadStats, saveStats, type NovaStats } from '../stats';
+
+/** 게임오버 시 스테이징되는 런 기록. 부활하면 폐기, 다음 런 시작 시 stats에 확정(docs/06 §4). */
+interface StagedRun {
+  score: number;
+  durationMs: number;
+  merges: number;
+  maxChain: number;
+  bestTier: number;
+}
 
 export type GameState = 'title' | 'playing' | 'gameover';
 
@@ -74,11 +85,23 @@ export class Game {
   nextTier = pickDropTier();
   aimX = WORLD.width / 2;
 
+  /** 런당 1회 소비되는 광고 보상 플래그(docs/02 §5). 스킵(false)은 소비하지 않는다. */
+  reviveUsed = false;
+  doubleUsed = false;
+  /** 첫판 힌트 표시 여부 — 첫 머지 성공 시 true로 고정되고 영구 저장된다(docs/05 §M3). */
+  tutorialDone = false;
+  stats: NovaStats = emptyStats();
+
   private dropLockUntil = 0;
   private lastMergeAt = -Infinity;
   private chainStage = 0;
   private lastWarningPulseAt = -Infinity;
   private readonly prevVy = new Map<number, number>();
+  private runStartAt = 0;
+  private runMergeCount = 0;
+  private runMaxChainStage = 0;
+  private stagedRun: StagedRun | null = null;
+  private adInFlight = false;
 
   /** 렌더/fx 오케스트레이터(main.ts)가 매 프레임 드레인하는 1회성 이벤트 큐. */
   readonly mergeEvents: MergeFx[] = [];
@@ -91,13 +114,20 @@ export class Game {
 
   async init(): Promise<void> {
     this.highScore = await this.platform.loadHighScore();
+    this.stats = await loadStats(this.platform);
+    this.tutorialDone = (await this.platform.getItem(STORAGE_KEYS.tutorialDone)) === 'true';
   }
 
   startTitle(): void {
     this.state = 'title';
   }
 
-  startPlaying(): void {
+  startPlaying(now: number): void {
+    // 직전 런이 부활 없이 끝났다면(게임오버 상태로 대기 중이었다면) 이 시점에 지표를 확정한다.
+    this.confirmStagedRun();
+    this.stats.restarts += 1;
+    saveStats(this.platform, this.stats);
+
     this.bodies = [];
     this.score = 0;
     this.bestTierReached = 0;
@@ -110,11 +140,17 @@ export class Game {
     this.dropEvents.length = 0;
     this.currentTier = pickDropTier();
     this.nextTier = pickDropTier();
+    this.reviveUsed = false;
+    this.doubleUsed = false;
+    this.adInFlight = false;
+    this.runStartAt = now;
+    this.runMergeCount = 0;
+    this.runMaxChainStage = 0;
     this.state = 'playing';
   }
 
-  restart(): void {
-    this.startPlaying();
+  restart(now: number): void {
+    this.startPlaying(now);
   }
 
   setAim(worldX: number): void {
@@ -175,6 +211,12 @@ export class Game {
     for (const { a, b } of merges) {
       removedIds.add(a.id);
       removedIds.add(b.id);
+      this.runMergeCount += 1;
+
+      if (!this.tutorialDone) {
+        this.tutorialDone = true;
+        void this.platform.setItem(STORAGE_KEYS.tutorialDone, 'true');
+      }
 
       const midX = (a.x + b.x) / 2;
       const midY = (a.y + b.y) / 2;
@@ -188,6 +230,7 @@ export class Game {
         this.chainStage = 1;
       }
       this.lastMergeAt = now;
+      this.runMaxChainStage = Math.max(this.runMaxChainStage, this.chainStage);
       const multiplier = chainMultiplier(this.chainStage);
 
       if (a.tier === LAST_TIER_ID) {
@@ -240,11 +283,11 @@ export class Game {
     }
 
     if (worstDuration >= OVERFLOW.gameOverMs) {
-      this.triggerGameOver();
+      this.triggerGameOver(now);
     }
   }
 
-  private triggerGameOver(): void {
+  private triggerGameOver(now: number): void {
     if (this.state !== 'playing') return;
     this.state = 'gameover';
     this.platform.haptic('fail');
@@ -253,6 +296,91 @@ export class Game {
       this.highScore = this.score;
       void this.platform.saveHighScore(this.highScore);
     }
+
+    // 지표는 즉시 확정하지 않고 스테이징만 한다 — 부활하면 폐기, 다음 런 시작 시 확정(docs/06 §4).
+    this.stagedRun = {
+      score: this.score,
+      durationMs: now - this.runStartAt,
+      merges: this.runMergeCount,
+      maxChain: this.runMaxChainStage,
+      bestTier: this.bestTierReached,
+    };
+  }
+
+  /** 광고 완주 시 하위 3티어 전체 + 오버플로우 라인 위 천체 제거, 점수·보드 유지, 배율 리셋(docs/02 §4). */
+  private performRevive(): void {
+    this.bodies = this.bodies.filter((body) => body.tier > 2 && body.y >= WORLD.overflowY);
+    this.chainStage = 0;
+    this.lastMergeAt = -Infinity;
+    this.lastWarningPulseAt = -Infinity;
+    this.overflowWarning = false;
+    this.dropLockUntil = 0;
+    this.state = 'playing';
+  }
+
+  /** 런당 1회. 스킵(완주 실패)은 소비하지 않는다. 노출/수락 지표는 즉시 기록. */
+  async reviveWithAd(): Promise<boolean> {
+    if (this.state !== 'gameover' || this.reviveUsed || this.adInFlight) return false;
+    this.adInFlight = true;
+    try {
+      this.stats.reviveShown += 1;
+      saveStats(this.platform, this.stats);
+
+      const completed = await this.platform.showRewardedAd('revive');
+      if (!completed) return false;
+
+      this.stats.reviveAccepted += 1;
+      saveStats(this.platform, this.stats);
+
+      this.reviveUsed = true;
+      this.stagedRun = null; // 런이 계속되므로 스테이징된 게임오버 기록은 폐기.
+      this.performRevive();
+      this.platform.haptic('success');
+      return true;
+    } finally {
+      this.adInFlight = false;
+    }
+  }
+
+  /** 런당 1회. 최종 점수를 2배로 하고 최고점수를 재평가한다(docs/02 §5). */
+  async doubleScoreWithAd(): Promise<boolean> {
+    if (this.state !== 'gameover' || this.doubleUsed || this.adInFlight) return false;
+    this.adInFlight = true;
+    try {
+      this.stats.doubleShown += 1;
+      saveStats(this.platform, this.stats);
+
+      const completed = await this.platform.showRewardedAd('double');
+      if (!completed) return false;
+
+      this.stats.doubleAccepted += 1;
+      saveStats(this.platform, this.stats);
+
+      this.doubleUsed = true;
+      this.score *= 2;
+      if (this.stagedRun) this.stagedRun.score = this.score;
+      if (this.score > this.highScore) {
+        this.highScore = this.score;
+        void this.platform.saveHighScore(this.highScore);
+      }
+      return true;
+    } finally {
+      this.adInFlight = false;
+    }
+  }
+
+  /** 스테이징된 런 기록을 stats에 합산 — 다음 런 시작 시 호출(docs/06 §4). */
+  private confirmStagedRun(): void {
+    const run = this.stagedRun;
+    if (!run) return;
+    this.stats.totalRuns += 1;
+    this.stats.totalScore += run.score;
+    this.stats.totalDurationMs += run.durationMs;
+    this.stats.totalMerges += run.merges;
+    this.stats.maxChain = Math.max(this.stats.maxChain, run.maxChain);
+    this.stats.tierReachedCounts[run.bestTier] = (this.stats.tierReachedCounts[run.bestTier] ?? 0) + 1;
+    this.stagedRun = null;
+    saveStats(this.platform, this.stats);
   }
 
   currentChainDisplay(now: number): ChainDisplay | null {

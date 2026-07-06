@@ -1,7 +1,7 @@
 import { CHAIN_COLORS, FX, HIGH_TIER_THRESHOLD, PHYSICS, TIERS, WORLD } from './config';
 import { Game, type DropFx, type MergeFx } from './game/game';
-import { createWebPlatform } from './platform/web';
-import { draw } from './render';
+import { createPlatform } from './platform';
+import { draw, hitTestGameOverButton, hitTestStatsButton, type GameOverButton } from './render';
 import {
   ensureAudioResumed,
   playBigBang,
@@ -65,22 +65,98 @@ function clientToWorld(clientX: number, clientY: number): { x: number; y: number
   };
 }
 
-const platform = createWebPlatform();
+const platform = createPlatform();
 const game = new Game(platform);
 
 let dragging = false;
+let statsOverlayOpen = false;
+
+// 클립보드 폴백 공유 성공 시 잠깐 보여주는 토스트. DOM 엘리먼트는 지연 생성해 재사용한다.
+let toastEl: HTMLDivElement | null = null;
+let toastHideTimer: number | undefined;
+
+function showToast(message: string): void {
+  if (typeof document === 'undefined') return;
+  if (!toastEl) {
+    toastEl = document.createElement('div');
+    toastEl.style.cssText = `
+      position:fixed; left:50%; bottom:12%; transform:translateX(-50%);
+      background:rgba(20,20,30,0.92); color:#fff; padding:10px 18px; border-radius:999px;
+      font:14px system-ui,-apple-system,sans-serif; z-index:9998; pointer-events:none;
+      opacity:0; transition:opacity 0.2s;
+    `;
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = message;
+  toastEl.style.opacity = '1';
+  window.clearTimeout(toastHideTimer);
+  toastHideTimer = window.setTimeout(() => {
+    if (toastEl) toastEl.style.opacity = '0';
+  }, 1600);
+}
+
+// 공유는 Platform 어댑터 대상이 아닌 표준 웹 API(UI 레이어) — navigator.share 우선,
+// 미지원/실패 시 클립보드 복사로 폴백(docs/02 §10).
+async function shareResult(current: Game): Promise<void> {
+  const text = `NOVA에서 ${current.bestTierName()}까지 진화시키고 ${current.score}점 달성!`;
+  const url = window.location.href;
+
+  if (typeof navigator.share === 'function') {
+    try {
+      await navigator.share({ text, url });
+      return;
+    } catch {
+      // 사용자가 공유를 취소한 경우 등 — 에러로 취급하지 않고 클립보드 폴백은 시도하지 않는다.
+      return;
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(`${text} ${url}`);
+    showToast('결과가 클립보드에 복사되었습니다');
+  } catch {
+    // 클립보드 API 미지원/거부 — 향상 기능이므로 조용히 무시.
+  }
+}
+
+function handleGameOverButton(id: GameOverButton['id']): void {
+  switch (id) {
+    case 'restart':
+      game.restart(performance.now());
+      break;
+    case 'revive':
+      void game.reviveWithAd();
+      break;
+    case 'double':
+      void game.doubleScoreWithAd();
+      break;
+    case 'share':
+      void shareResult(game);
+      break;
+  }
+}
 
 function handlePointerDown(clientX: number, clientY: number): void {
+  const world = clientToWorld(clientX, clientY);
+
   if (game.state === 'title') {
-    game.startPlaying();
+    if (statsOverlayOpen) {
+      statsOverlayOpen = false;
+      return;
+    }
+    if (hitTestStatsButton(world.x, world.y)) {
+      statsOverlayOpen = true;
+      return;
+    }
+    game.startPlaying(performance.now());
     return;
   }
   if (game.state === 'gameover') {
-    game.restart();
+    const button = hitTestGameOverButton(game, world.x, world.y);
+    if (button) handleGameOverButton(button.id);
     return;
   }
 
-  const world = clientToWorld(clientX, clientY);
   dragging = true;
   game.setAim(world.x);
 }
@@ -189,7 +265,7 @@ function frame(now: number): void {
   updateShake(frameDtSec);
   updateGlow(frameDtSec);
 
-  draw(ctx, game, now);
+  draw(ctx, game, now, statsOverlayOpen);
   requestAnimationFrame(frame);
 }
 
