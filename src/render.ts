@@ -44,9 +44,12 @@ export function draw(
 
   drawOverflowHeartbeat(ctx, game, now);
   drawOverflowLine(ctx, game, now);
+  drawNovaBurstOverlay(ctx, game);
 
+  const burstActive = game.isNovaBurstActive();
   for (const body of game.bodies) {
     drawTrail(ctx, body);
+    if (burstActive) drawBurstConvergeTrail(ctx, body);
   }
   for (const body of game.bodies) {
     drawBody(ctx, body, now);
@@ -119,6 +122,56 @@ function drawOverflowHeartbeat(ctx: CanvasRenderingContext2D, game: Game, now: n
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, WORLD.width, WORLD.height);
   ctx.restore();
+}
+
+/** 노바 버스트 펄스 지속 동안 "버스트 모드" 상태를 화면 전체로 표시 — 보라 틴트 + 비네트(docs/02 §4.6). */
+function drawNovaBurstOverlay(ctx: CanvasRenderingContext2D, game: Game): void {
+  if (!game.isNovaBurstActive()) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.14;
+  ctx.fillStyle = NOVA_BURST.color;
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.globalAlpha = 1;
+
+  const vignette = ctx.createRadialGradient(
+    WORLD.width / 2,
+    WORLD.height / 2,
+    WORLD.height * 0.22,
+    WORLD.width / 2,
+    WORLD.height / 2,
+    WORLD.height * 0.72
+  );
+  vignette.addColorStop(0, 'rgba(10,0,24,0)');
+  vignette.addColorStop(1, 'rgba(10,0,24,0.6)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  ctx.restore();
+}
+
+/** 펄스 지속 동안 모든 천체에 바닥 중앙으로 빨려가는 방향의 모션 트레일 — 실제 속도와
+ * 무관하게 목표점 방향으로 항상 그려 "압축되고 있다"는 인과를 눈에 보이게 한다(docs/02 §4.6). */
+function drawBurstConvergeTrail(ctx: CanvasRenderingContext2D, body: GameBody): void {
+  const targetX = WORLD.width / 2;
+  const targetY = WORLD.height;
+  const dx = targetX - body.x;
+  const dy = targetY - body.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const dirX = -dx / dist;
+  const dirY = -dy / dist;
+  const steps = 4;
+
+  for (let i = 1; i <= steps; i++) {
+    const d = i * body.radius * 0.5;
+    const alpha = 0.2 * (1 - i / (steps + 1));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(body.x + dirX * d, body.y + dirY * d, body.radius * (1 - i * 0.12), 0, Math.PI * 2);
+    ctx.fillStyle = NOVA_BURST.color;
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 /** 빠르게 움직이는 바디 뒤로 옅어지는 잔상 몇 개 — 히스토리 버퍼 없이 현재 속도만으로 근사. */
@@ -628,11 +681,74 @@ function drawNovaGauge(ctx: CanvasRenderingContext2D, game: Game, now: number): 
     ctx.stroke();
   }
 
-  ctx.beginPath();
-  ctx.arc(cx, cy, r * 0.4, 0, Math.PI * 2);
-  ctx.fillStyle = isFull ? '#ffffff' : 'rgba(255,255,255,0.7)';
-  ctx.fill();
+  drawGaugeEmoji(ctx, cx, cy, r, isFull);
 
+  ctx.restore();
+}
+
+const GAUGE_EMOJI_FONT = `${Math.round(NOVA_BURST.gaugeRadius * 1.3)}px system-ui, -apple-system, sans-serif`;
+let grayGaugeEmojiCanvas: HTMLCanvasElement | null = null;
+
+/** ctx.filter(grayscale) 미지원 브라우저용 폴백 — 🧨를 1회 렌더 후 픽셀 탈채도해 캐싱한다. */
+function getGrayGaugeEmojiCanvas(): HTMLCanvasElement {
+  if (grayGaugeEmojiCanvas) return grayGaugeEmojiCanvas;
+
+  const size = 48;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  grayGaugeEmojiCanvas = canvas;
+
+  const offCtx = canvas.getContext('2d');
+  if (!offCtx) return canvas; // 극단적 미지원 환경 — 빈(투명) 캔버스 반환, 크래시 방지만 보장
+
+  offCtx.textAlign = 'center';
+  offCtx.textBaseline = 'middle';
+  offCtx.font = GAUGE_EMOJI_FONT;
+  offCtx.fillText('🧨', size / 2, size / 2 + 1);
+
+  const imgData = offCtx.getImageData(0, 0, size, size);
+  const data = imgData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    data[i] = gray;
+    data[i + 1] = gray;
+    data[i + 2] = gray;
+  }
+  offCtx.putImageData(imgData, 0, 0);
+  return canvas;
+}
+
+/** 게이지 중앙 🧨 — 미충전 시 회색/반투명, 만충 시 컬러 전환(docs/02 §4.6 연출).
+ * ctx.filter(grayscale) 우선 시도하고, 미지원 브라우저는 캐싱된 탈채도 캔버스로 폴백. */
+function drawGaugeEmoji(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, isFull: boolean): void {
+  if (isFull) {
+    ctx.font = GAUGE_EMOJI_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🧨', cx, cy + 1);
+    return;
+  }
+
+  // 'filter' in ctx는 CanvasRenderingContext2D 타입 자체가 filter를 필수 속성으로 선언해
+  // false 분기가 never로 좁혀진다 — ctx 원본이 아닌 unknown 캐스트에 대해 체크해 타입을 보존.
+  const supportsCanvasFilter = 'filter' in (ctx as unknown as Record<string, unknown>);
+  if (supportsCanvasFilter) {
+    ctx.save();
+    ctx.filter = 'grayscale(1) opacity(65%)';
+    ctx.font = GAUGE_EMOJI_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🧨', cx, cy + 1);
+    ctx.restore();
+    return;
+  }
+
+  const gray = getGrayGaugeEmojiCanvas();
+  const size = r * 1.5;
+  ctx.save();
+  ctx.globalAlpha = 0.65;
+  ctx.drawImage(gray, cx - size / 2, cy - size / 2, size, size);
   ctx.restore();
 }
 

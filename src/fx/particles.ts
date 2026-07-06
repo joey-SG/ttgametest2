@@ -67,6 +67,33 @@ export function spawnBurst(
   }
 }
 
+/** 노바 버스트 펄스 중 "중앙으로 빨려드는" 인워드 파티클 — spawnBurst(바깥으로 퍼짐)의 반대 방향. */
+export function spawnInwardParticle(
+  originX: number,
+  originY: number,
+  targetX: number,
+  targetY: number,
+  color: string,
+  speed: number,
+  life: number
+): void {
+  const p = acquire();
+  const dx = targetX - originX;
+  const dy = targetY - originY;
+  const dist = Math.hypot(dx, dy) || 1;
+  p.active = true;
+  p.kind = 'dot';
+  p.x = originX;
+  p.y = originY;
+  p.vx = (dx / dist) * speed;
+  p.vy = (dy / dist) * speed;
+  p.radius = 1.4 + Math.random() * 2;
+  p.maxRadius = p.radius;
+  p.life = life;
+  p.maxLife = life;
+  p.color = color;
+}
+
 /** 고티어 머지/빅뱅용 확장 링 웨이브. */
 export function spawnRing(x: number, y: number, color: string, maxRadius: number, life: number): void {
   const p = acquire();

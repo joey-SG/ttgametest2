@@ -2,6 +2,8 @@
 // iOS는 첫 사용자 제스처 안에서 resume()해야 소리가 난다 (docs/03 §3.4) —
 // main.ts의 pointerdown 핸들러에서 ensureAudioResumed()를 호출한다.
 
+import { NOVA_BURST } from './config';
+
 let ctx: AudioContext | null = null;
 
 function getContext(): AudioContext | null {
@@ -106,7 +108,9 @@ export function playGameOverBoom(): void {
   playTone({ freqStart: 140, freqEnd: 40, duration: 0.5, type: 'sine', gain: 0.25 });
 }
 
-/** 노바 버스트 발동 — 딥 "웅" 사운드(저음 훔 스웰). */
+/** 노바 버스트 발동 — 딥 "웅"(저음 스웰) + 흡입(rising whoosh) 2레이어(docs/02 §4.6 연출).
+ * 딥 웅의 길이는 펄스 지속시간(config)에 맞춰 자동으로 따라가고, 흡입은 발동 초반에만 짧게 겹친다. */
 export function playNovaBurst(): void {
-  playTone({ freqStart: 180, freqEnd: 55, duration: 0.7, type: 'sine', gain: 0.22, filterHz: 900 });
+  playTone({ freqStart: 180, freqEnd: 55, duration: NOVA_BURST.pulseDurationMs / 1000, type: 'sine', gain: 0.22, filterHz: 900 });
+  playTone({ freqStart: 260, freqEnd: 1400, duration: 0.32, type: 'triangle', gain: 0.1, filterHz: 2400 });
 }

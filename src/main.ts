@@ -11,7 +11,7 @@ import {
   playNovaBurst,
   playWarningBeep,
 } from './audio';
-import { spawnBurst, spawnRing, updateParticles } from './fx/particles';
+import { spawnBurst, spawnInwardParticle, spawnRing, updateParticles } from './fx/particles';
 import { triggerShake, updateShake } from './fx/shake';
 import { triggerEdgeGlow, triggerWhiteout, updateGlow } from './fx/glow';
 
@@ -224,11 +224,13 @@ function processMergeFx(fx: MergeFx): void {
     return;
   }
 
-  spawnBurst(fx.x, fx.y, tier.color, FX.particleBurstCount, FX.particleBurstSpeed, FX.particleLifeSec);
+  // 노바 버스트 펄스 중 발생한 머지는 파티클/플래시를 강조해 압축→접촉의 인과를 눈에 보이게 한다(docs/02 §4.6).
+  const emphasis = fx.duringBurst ? NOVA_BURST.mergeEmphasisMultiplier : 1;
+  spawnBurst(fx.x, fx.y, tier.color, Math.round(FX.particleBurstCount * emphasis), FX.particleBurstSpeed, FX.particleLifeSec);
 
   const isChain = fx.chainStage >= 2;
   const glowColor = isChain ? CHAIN_COLORS[Math.min(fx.chainStage, CHAIN_COLORS.length) - 1] : tier.color;
-  triggerEdgeGlow(glowColor, isChain ? FX.edgeGlowChainIntensity : FX.edgeGlowMergeIntensity);
+  triggerEdgeGlow(glowColor, (isChain ? FX.edgeGlowChainIntensity : FX.edgeGlowMergeIntensity) * emphasis);
 
   if (fx.tier >= HIGH_TIER_THRESHOLD) {
     triggerShake(FX.shakeHighTier);
@@ -242,12 +244,12 @@ function processDropFx(_fx: DropFx): void {
   playDropTick();
 }
 
-/** 노바 버스트 발동 연출: 바닥 중앙 링 웨이브 + 별 파티클 + 딥 "웅" 사운드 + 소형 셰이크(docs/02 §4.6).
- * combo 햅틱은 game.ts의 tryTriggerNovaBurst()가 직접 큐 없이 호출한다. */
+/** 노바 버스트 발동 연출: 화면 플래시(edgeGlow 최대 강도) + 전체화면 충격파 링 + 별 파티클 +
+ * 강한 셰이크 + 딥 "웅"+흡입 사운드(docs/02 §4.6). combo 햅틱은 game.ts가 큐 없이 직접 호출한다. */
 function processNovaBurstFx(fx: NovaBurstFx): void {
   spawnRing(fx.x, fx.y, NOVA_BURST.color, NOVA_BURST.ringMaxRadius, NOVA_BURST.ringLifeSec);
   spawnBurst(fx.x, fx.y, NOVA_BURST.color, NOVA_BURST.particleBurstCount, NOVA_BURST.particleBurstSpeed, NOVA_BURST.particleLifeSec);
-  triggerEdgeGlow(NOVA_BURST.color, FX.edgeGlowChainIntensity);
+  triggerEdgeGlow(NOVA_BURST.color, NOVA_BURST.flashIntensity, NOVA_BURST.flashDecayPerSec);
   triggerShake(NOVA_BURST.shakeAmount);
   playNovaBurst();
 }
@@ -264,6 +266,7 @@ function frame(now: number): void {
 
   const prevState = game.state;
   const prevWarningPulseCount = game.warningPulseCount;
+  const prevNovaFullPulseCount = game.novaFullPulseCount;
 
   let steps = 0;
   while (accumulatorMs >= FIXED_DT_MS && steps < PHYSICS.maxStepsPerFrame) {
@@ -284,8 +287,29 @@ function frame(now: number): void {
   if (game.warningPulseCount !== prevWarningPulseCount) {
     playWarningBeep();
   }
+  // 만충 전환 순간 게이지 발 링 버스트 1회 — 숨쉬는 글로우(render.ts)와 함께 활성화 신호 이중화(docs/02 §4.6).
+  if (game.novaFullPulseCount !== prevNovaFullPulseCount) {
+    spawnRing(NOVA_BURST.gaugeX, NOVA_BURST.gaugeY, NOVA_BURST.color, NOVA_BURST.gaugeFullRingRadius, NOVA_BURST.gaugeFullRingLifeSec);
+  }
   if (prevState === 'playing' && game.state === 'gameover') {
     playGameOverBoom();
+  }
+
+  // 펄스 지속 동안 중앙으로 빨려드는 인워드 파티클 스트림을 계속 스폰(docs/02 §4.6 연출).
+  if (game.isNovaBurstActive()) {
+    for (let i = 0; i < NOVA_BURST.streamParticlesPerFrame; i++) {
+      const originX = Math.random() * WORLD.width;
+      const originY = Math.random() * WORLD.height;
+      spawnInwardParticle(
+        originX,
+        originY,
+        WORLD.width / 2,
+        WORLD.height,
+        NOVA_BURST.color,
+        NOVA_BURST.streamParticleSpeed,
+        NOVA_BURST.streamParticleLifeSec
+      );
+    }
   }
 
   const frameDtSec = frameDt / 1000;

@@ -91,23 +91,32 @@ export const CHAIN_COLORS = ['#ffcf4d', '#ff9f4d', '#ff6b4d', '#ff3d5c'];
 
 // 시그니처 메커니즘: 노바 버스트 — 충전형 중력 펄스(docs/02 §4.6). 머지로 충전, 만충 시
 // 하단 게이지 UI 탭으로 발동해 바닥 중앙을 향한 추가 중력 펄스로 보드를 압축한다.
+// 2026-07-06 플레이 피드백("작동된 거야?") 반영 — 펄스 상향, 이모지 게이지, 발동 전체화면 연출.
 export const NOVA_BURST = {
   chargePerMerge: 1, // 머지 1회당 게이지 충전량
   full: 10, // 만충 게이지 값(발동 가능해지는 임계)
-  pulseDurationMs: 700, // 발동 시 중력 펄스 지속시간
-  pulseStrength: 4200, // 펄스 중 바닥 중앙(WORLD.width/2, WORLD.height)을 향한 추가 가속도(월드 단위/s^2)
+  pulseDurationMs: 800, // 발동 시 중력 펄스 지속시간
+  pulseStrength: 6800, // 펄스 중 바닥 중앙(WORLD.width/2, WORLD.height)을 향한 추가 가속도(월드 단위/s^2)
   pulseExtraFriction: 0.12, // 펄스 중 접선(마찰) 감쇠 추가분 — 압축 중 튐/지터 완화
   color: '#8b5cf6', // 게이지 UI·발동 연출 공용 네온 색(보라)
-  ringMaxRadius: 460, // 발동 링 웨이브 최대 반지름(월드 단위) — 보드 대부분을 덮도록
+  ringMaxRadius: 680, // 발동 시 화면 전체를 덮는 충격파 링 최대 반지름(월드 단위)
   ringLifeSec: 0.6,
   particleBurstCount: 26,
   particleBurstSpeed: 200,
   particleLifeSec: 0.7,
-  shakeAmount: 7, // 소형 셰이크 — 고티어 머지(FX.shakeHighTier=10)보다 약하게
+  shakeAmount: 14, // 발동 셰이크 — 고티어 머지(FX.shakeHighTier=10)보다 강하게
+  flashIntensity: 1, // 발동 순간 화면 플래시(edgeGlow) 강도 — 최대치로 튕겨서 확실히 체감
+  flashDecayPerSec: 6, // 플래시가 빠르게 꺼지도록(글로우 기본 3보다 빠름)
   gaugeRadius: 20, // 게이지 UI 시각 반지름(월드 단위)
   gaugeHitRadius: 26, // 탭 히트 반지름 — 지름 52 ≈ 최소 44px 상당 보장
   gaugeX: WORLD.width / 2,
   gaugeY: WORLD.height - 36,
+  gaugeFullRingRadius: 48, // 만충 전환 순간 게이지 발 링 버스트 반지름(활성화 신호 이중화)
+  gaugeFullRingLifeSec: 0.35,
+  streamParticlesPerFrame: 2, // 펄스 지속 동안 프레임당 스폰하는 중앙행 인워드 파티클 수
+  streamParticleSpeed: 260,
+  streamParticleLifeSec: 0.45,
+  mergeEmphasisMultiplier: 1.8, // 펄스 중 발생한 머지의 파티클 수·플래시 강도 배율(압축→접촉 인과 강조)
 };
 
 export const STORAGE_KEYS = {

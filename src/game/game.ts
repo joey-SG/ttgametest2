@@ -44,6 +44,8 @@ export interface MergeFx {
   y: number;
   bigBang: boolean;
   chainStage: number;
+  /** 노바 버스트 펄스 도중 발생한 머지인지 — main.ts가 파티클/플래시를 강조하는 데 쓴다(docs/02 §4.6). */
+  duringBurst: boolean;
 }
 
 export interface DropFx {
@@ -101,6 +103,9 @@ export class Game {
   /** 노바 버스트 게이지(0~NOVA_BURST.full). 머지로 충전, 발동 시 0(docs/02 §4.6).
    * 게임오버 시에도 유지(부활 시 이어짐) — startPlaying(새 런)에서만 0으로 리셋. */
   novaGauge = 0;
+  /** 만충 전환 순간마다 증가 — main.ts가 warningPulseCount와 같은 패턴으로 프레임 간 변화를
+   * 감지해 게이지 발 링 버스트를 1회 트리거한다(활성화 신호 이중화, docs/02 §4.6). */
+  novaFullPulseCount = 0;
   private novaBurstUntil: number | null = null;
 
   private dropLockUntil = 0;
@@ -240,7 +245,8 @@ export class Game {
     this.prevVy.clear();
     for (const body of this.bodies) this.prevVy.set(body.id, body.vy);
 
-    const merges = stepWorld(this.bodies, bounds, dt, this.currentPhysicsConfig(now));
+    const cfg = this.currentPhysicsConfig(now);
+    const merges = stepWorld(this.bodies, bounds, dt, cfg);
 
     for (const body of this.bodies) {
       const before = this.prevVy.get(body.id);
@@ -249,13 +255,14 @@ export class Game {
       }
     }
 
-    this.processMerges(merges, now);
+    this.processMerges(merges, now, cfg.gravityPulse !== undefined);
     this.updateOverflow(now);
   }
 
   private processMerges(
     merges: { a: Body; b: Body }[],
-    now: number
+    now: number,
+    duringBurst: boolean
   ): void {
     if (merges.length === 0) return;
 
@@ -269,7 +276,10 @@ export class Game {
       // 노바 버스트 충전: 머지 1회 = 게이지 +1. 만충 전환 순간에만 select 햅틱 1회(docs/02 §4.6).
       if (this.novaGauge < NOVA_BURST.full) {
         this.novaGauge = Math.min(NOVA_BURST.full, this.novaGauge + NOVA_BURST.chargePerMerge);
-        if (this.novaGauge >= NOVA_BURST.full) this.platform.haptic('select');
+        if (this.novaGauge >= NOVA_BURST.full) {
+          this.platform.haptic('select');
+          this.novaFullPulseCount += 1;
+        }
       }
 
       if (!this.tutorialDone) {
@@ -295,7 +305,7 @@ export class Game {
       if (a.tier === LAST_TIER_ID) {
         // 블랙홀 + 블랙홀 = 빅뱅: 둘 다 소멸, 새 바디 없음, 보너스 점수.
         this.score += BIG_BANG_BONUS;
-        this.mergeEvents.push({ tier: a.tier, x: midX, y: midY, bigBang: true, chainStage: this.chainStage });
+        this.mergeEvents.push({ tier: a.tier, x: midX, y: midY, bigBang: true, chainStage: this.chainStage, duringBurst });
         this.platform.haptic('combo');
         continue;
       }
@@ -312,7 +322,7 @@ export class Game {
 
       this.score += newTierConfig.score * multiplier;
       this.bestTierReached = Math.max(this.bestTierReached, newTier);
-      this.mergeEvents.push({ tier: newTier, x: midX, y: midY, bigBang: false, chainStage: this.chainStage });
+      this.mergeEvents.push({ tier: newTier, x: midX, y: midY, bigBang: false, chainStage: this.chainStage, duringBurst });
       this.platform.haptic(this.chainStage >= 3 || newTier >= HIGH_TIER_THRESHOLD ? 'combo' : 'success');
     }
 
