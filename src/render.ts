@@ -1,4 +1,4 @@
-import { CHAIN_COLORS, FX, LAST_TIER_ID, TIERS, WORLD } from './config';
+import { CHAIN_COLORS, FX, LAST_TIER_ID, NOVA_BURST, TIERS, WORLD } from './config';
 import type { Game } from './game/game';
 import type { GameBody } from './game/game';
 import { drawParticles } from './fx/particles';
@@ -58,6 +58,7 @@ export function draw(
 
   drawLadder(ctx, game);
   drawHud(ctx, game, now);
+  drawNovaGauge(ctx, game, now);
 
   if (game.state === 'playing' && !game.tutorialDone) {
     drawTutorialHint(ctx);
@@ -583,6 +584,55 @@ function drawStatsOverlay(ctx: CanvasRenderingContext2D, game: Game): void {
   ctx.font = '400 13px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.fillText('탭하여 닫기', WORLD.width / 2, WORLD.height - 36);
+  ctx.restore();
+}
+
+/** 노바 버스트 게이지 UI(하단 중앙) 히트테스트(월드 좌표) — main.ts의 포인터 핸들러가 호출.
+ * 만충 아닐 때도 히트 영역은 유지(탭은 no-op) — 조준 아래로 새지 않도록 잡아둔다. */
+export function hitTestNovaGauge(x: number, y: number): boolean {
+  return Math.hypot(x - NOVA_BURST.gaugeX, y - NOVA_BURST.gaugeY) <= NOVA_BURST.gaugeHitRadius;
+}
+
+/** 노바 버스트 게이지 UI — 하단 중앙 원형 아이콘. 충전 진행을 아크로, 만충 시 글로우 펄스로 표시(docs/02 §4.6). */
+function drawNovaGauge(ctx: CanvasRenderingContext2D, game: Game, now: number): void {
+  const { gaugeX: cx, gaugeY: cy, gaugeRadius: r, full, color } = NOVA_BURST;
+  const ratio = Math.min(1, game.novaGauge / full);
+  const isFull = game.novaGauge >= full;
+  const active = game.isNovaBurstActive();
+
+  ctx.save();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(10,8,24,0.55)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.stroke();
+
+  if (ratio > 0) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r - 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+    ctx.closePath();
+    ctx.fillStyle = hexToRgba(color, isFull ? 0.85 : 0.55);
+    ctx.fill();
+  }
+
+  if (isFull && !active) {
+    const pulse = 0.5 + 0.5 * Math.sin(now / 220);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 4 + pulse * 4, 0, Math.PI * 2);
+    ctx.strokeStyle = hexToRgba(color, 0.4 + pulse * 0.4);
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.4, 0, Math.PI * 2);
+  ctx.fillStyle = isFull ? '#ffffff' : 'rgba(255,255,255,0.7)';
+  ctx.fill();
+
   ctx.restore();
 }
 

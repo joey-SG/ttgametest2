@@ -105,3 +105,8 @@ export function playWarningBeep(): void {
 export function playGameOverBoom(): void {
   playTone({ freqStart: 140, freqEnd: 40, duration: 0.5, type: 'sine', gain: 0.25 });
 }
+
+/** 노바 버스트 발동 — 딥 "웅" 사운드(저음 훔 스웰). */
+export function playNovaBurst(): void {
+  playTone({ freqStart: 180, freqEnd: 55, duration: 0.7, type: 'sine', gain: 0.22, filterHz: 900 });
+}

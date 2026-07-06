@@ -20,6 +20,13 @@ export interface Bounds {
   height: number;
 }
 
+export interface GravityPulse {
+  targetX: number;
+  targetY: number;
+  strength: number; // 목표점 방향 단위벡터 × 이 값만큼 가속도를 추가(월드 단위/s^2)
+  extraFriction?: number; // 펄스 중 cfg.friction에 가산 — 압축 중 튐/지터 완화
+}
+
 export interface PhysicsConfig {
   substeps: number;
   gravity: number;
@@ -27,6 +34,9 @@ export interface PhysicsConfig {
   friction: number;
   positionCorrectionPercent: number;
   positionSlop: number;
+  /** 노바 버스트 등 일시적 중력 오버라이드 — 지정 시 기본(수직) 중력 위에 목표점을 향한
+   * 가속도를 가산한다(docs/02 §4.6). 스텝 시그니처는 그대로 유지하고 cfg만 확장. */
+  gravityPulse?: GravityPulse;
 }
 
 export interface MergePair {
@@ -68,11 +78,15 @@ export function stepWorld(
 ): MergePair[] {
   const merges: MergePair[] = [];
   const subDt = dt / cfg.substeps;
+  // 펄스 중엔 접선 감쇠(friction)만 일시적으로 강화 — 벽/충돌 해소에 쓰는 cfg를 이 스텝 한정으로 교체.
+  const resolveCfg: PhysicsConfig = cfg.gravityPulse?.extraFriction
+    ? { ...cfg, friction: Math.min(0.95, cfg.friction + cfg.gravityPulse.extraFriction) }
+    : cfg;
 
   for (let s = 0; s < cfg.substeps; s++) {
-    integrate(bodies, subDt, cfg.gravity);
-    resolveWalls(bodies, bounds, cfg);
-    resolveCollisions(bodies, cfg, merges);
+    integrate(bodies, subDt, cfg);
+    resolveWalls(bodies, bounds, resolveCfg);
+    resolveCollisions(bodies, resolveCfg, merges);
     // 안전망: 극단적 질량비(예: 블랙홀이 작은 천체 더미를 짓누르는 경우) 원-원 위치
     // 보정이 벽 보정보다 늦게 실행돼 가벼운 바디를 경계 밖으로 밀어낼 수 있다.
     // 부드러운 반발/보정과 무관하게 위치만 강제로 경계 안쪽에 묶어 관통을 원천 차단.
@@ -90,9 +104,20 @@ function clampBounds(bodies: Body[], bounds: Bounds): void {
   }
 }
 
-function integrate(bodies: Body[], dt: number, gravity: number): void {
+function integrate(bodies: Body[], dt: number, cfg: PhysicsConfig): void {
+  const pulse = cfg.gravityPulse;
   for (const b of bodies) {
-    b.vy += gravity * dt;
+    b.vy += cfg.gravity * dt;
+    if (pulse) {
+      // 목표점(바닥 중앙)까지의 방향 단위벡터 × strength를 가속도로 가산. targetY는 항상
+      // 바디보다 아래(바디는 벽 보정으로 y <= bounds.height - radius)라 dy는 항상 양수(하향) —
+      // 펄스 자체가 위로 튀는 속도를 만들지 않는다.
+      const dx = pulse.targetX - b.x;
+      const dy = pulse.targetY - b.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      b.vx += (dx / dist) * pulse.strength * dt;
+      b.vy += (dy / dist) * pulse.strength * dt;
+    }
     b.x += b.vx * dt;
     b.y += b.vy * dt;
   }

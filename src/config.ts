@@ -89,6 +89,27 @@ export const FX = {
 // 체인 단계별(1/2/3/4+) 배지·글로우 색 — 단계가 오를수록 붉게 이동.
 export const CHAIN_COLORS = ['#ffcf4d', '#ff9f4d', '#ff6b4d', '#ff3d5c'];
 
+// 시그니처 메커니즘: 노바 버스트 — 충전형 중력 펄스(docs/02 §4.6). 머지로 충전, 만충 시
+// 하단 게이지 UI 탭으로 발동해 바닥 중앙을 향한 추가 중력 펄스로 보드를 압축한다.
+export const NOVA_BURST = {
+  chargePerMerge: 1, // 머지 1회당 게이지 충전량
+  full: 10, // 만충 게이지 값(발동 가능해지는 임계)
+  pulseDurationMs: 700, // 발동 시 중력 펄스 지속시간
+  pulseStrength: 4200, // 펄스 중 바닥 중앙(WORLD.width/2, WORLD.height)을 향한 추가 가속도(월드 단위/s^2)
+  pulseExtraFriction: 0.12, // 펄스 중 접선(마찰) 감쇠 추가분 — 압축 중 튐/지터 완화
+  color: '#8b5cf6', // 게이지 UI·발동 연출 공용 네온 색(보라)
+  ringMaxRadius: 460, // 발동 링 웨이브 최대 반지름(월드 단위) — 보드 대부분을 덮도록
+  ringLifeSec: 0.6,
+  particleBurstCount: 26,
+  particleBurstSpeed: 200,
+  particleLifeSec: 0.7,
+  shakeAmount: 7, // 소형 셰이크 — 고티어 머지(FX.shakeHighTier=10)보다 약하게
+  gaugeRadius: 20, // 게이지 UI 시각 반지름(월드 단위)
+  gaugeHitRadius: 26, // 탭 히트 반지름 — 지름 52 ≈ 최소 44px 상당 보장
+  gaugeX: WORLD.width / 2,
+  gaugeY: WORLD.height - 36,
+};
+
 export const STORAGE_KEYS = {
   highScore: 'nova.highscore',
   stats: 'nova.stats',

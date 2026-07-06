@@ -1,13 +1,14 @@
-import { CHAIN_COLORS, FX, HIGH_TIER_THRESHOLD, PHYSICS, TIERS, WORLD } from './config';
-import { Game, type DropFx, type MergeFx } from './game/game';
+import { CHAIN_COLORS, FX, HIGH_TIER_THRESHOLD, NOVA_BURST, PHYSICS, TIERS, WORLD } from './config';
+import { Game, type DropFx, type MergeFx, type NovaBurstFx } from './game/game';
 import { createPlatform } from './platform';
-import { draw, hitTestGameOverButton, hitTestStatsButton, type GameOverButton } from './render';
+import { draw, hitTestGameOverButton, hitTestNovaGauge, hitTestStatsButton, type GameOverButton } from './render';
 import {
   ensureAudioResumed,
   playBigBang,
   playDropTick,
   playGameOverBoom,
   playMergeSound,
+  playNovaBurst,
   playWarningBeep,
 } from './audio';
 import { spawnBurst, spawnRing, updateParticles } from './fx/particles';
@@ -157,6 +158,12 @@ function handlePointerDown(clientX: number, clientY: number): void {
     return;
   }
 
+  // 노바 버스트 게이지 탭 — 만충 아니면 no-op이지만, 조준/드롭으로 새지 않도록 여기서 흡수한다.
+  if (hitTestNovaGauge(world.x, world.y)) {
+    game.tryTriggerNovaBurst(performance.now());
+    return;
+  }
+
   dragging = true;
   game.setAim(world.x);
 }
@@ -235,6 +242,16 @@ function processDropFx(_fx: DropFx): void {
   playDropTick();
 }
 
+/** 노바 버스트 발동 연출: 바닥 중앙 링 웨이브 + 별 파티클 + 딥 "웅" 사운드 + 소형 셰이크(docs/02 §4.6).
+ * combo 햅틱은 game.ts의 tryTriggerNovaBurst()가 직접 큐 없이 호출한다. */
+function processNovaBurstFx(fx: NovaBurstFx): void {
+  spawnRing(fx.x, fx.y, NOVA_BURST.color, NOVA_BURST.ringMaxRadius, NOVA_BURST.ringLifeSec);
+  spawnBurst(fx.x, fx.y, NOVA_BURST.color, NOVA_BURST.particleBurstCount, NOVA_BURST.particleBurstSpeed, NOVA_BURST.particleLifeSec);
+  triggerEdgeGlow(NOVA_BURST.color, FX.edgeGlowChainIntensity);
+  triggerShake(NOVA_BURST.shakeAmount);
+  playNovaBurst();
+}
+
 // 고정 타임스텝 누적기 (Fix Your Timestep 패턴) — 프레임 변동을 흡수해 물리를 결정적으로 유지.
 const FIXED_DT_MS = PHYSICS.fixedDt * 1000;
 let lastFrameTime = performance.now();
@@ -260,6 +277,9 @@ function frame(now: number): void {
   }
   while (game.dropEvents.length > 0) {
     processDropFx(game.dropEvents.shift()!);
+  }
+  while (game.burstEvents.length > 0) {
+    processNovaBurstFx(game.burstEvents.shift()!);
   }
   if (game.warningPulseCount !== prevWarningPulseCount) {
     playWarningBeep();

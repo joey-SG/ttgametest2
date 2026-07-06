@@ -7,13 +7,14 @@ import {
   FX,
   HIGH_TIER_THRESHOLD,
   LAST_TIER_ID,
+  NOVA_BURST,
   OVERFLOW,
   PHYSICS,
   STORAGE_KEYS,
   TIERS,
   WORLD,
 } from '../config';
-import { createBody, stepWorld, type Body } from './physics';
+import { createBody, stepWorld, type Body, type PhysicsConfig } from './physics';
 import type { Platform } from '../platform/types';
 import { emptyStats, loadStats, saveStats, type NovaStats } from '../stats';
 
@@ -49,6 +50,11 @@ export interface DropFx {
   x: number;
   y: number;
   tier: number;
+}
+
+export interface NovaBurstFx {
+  x: number;
+  y: number;
 }
 
 export interface ChainDisplay {
@@ -92,6 +98,11 @@ export class Game {
   tutorialDone = false;
   stats: NovaStats = emptyStats();
 
+  /** 노바 버스트 게이지(0~NOVA_BURST.full). 머지로 충전, 발동 시 0(docs/02 §4.6).
+   * 게임오버 시에도 유지(부활 시 이어짐) — startPlaying(새 런)에서만 0으로 리셋. */
+  novaGauge = 0;
+  private novaBurstUntil: number | null = null;
+
   private dropLockUntil = 0;
   private lastMergeAt = -Infinity;
   private chainStage = 0;
@@ -106,6 +117,7 @@ export class Game {
   /** 렌더/fx 오케스트레이터(main.ts)가 매 프레임 드레인하는 1회성 이벤트 큐. */
   readonly mergeEvents: MergeFx[] = [];
   readonly dropEvents: DropFx[] = [];
+  readonly burstEvents: NovaBurstFx[] = [];
   overflowWarning = false;
   /** 오버플로우 경고 반복 펄스(햅틱+비프)가 울릴 때마다 증가 — main.ts가 변화를 감지해 사운드 재생. */
   warningPulseCount = 0;
@@ -138,6 +150,9 @@ export class Game {
     this.overflowWarning = false;
     this.mergeEvents.length = 0;
     this.dropEvents.length = 0;
+    this.burstEvents.length = 0;
+    this.novaGauge = 0;
+    this.novaBurstUntil = null;
     this.currentTier = pickDropTier();
     this.nextTier = pickDropTier();
     this.reviveUsed = false;
@@ -180,6 +195,44 @@ export class Game {
     this.platform.haptic('select');
   }
 
+  /**
+   * 게이지 만충 시에만 발동 — 0.7초간 바닥 중앙으로의 중력 펄스로 보드를 압축해 접촉 머지
+   * 연쇄를 유발한다(docs/02 §4.6). 만충 아니거나 이미 펄스 진행 중이면 no-op.
+   */
+  tryTriggerNovaBurst(now: number): boolean {
+    if (this.state !== 'playing') return false;
+    if (this.novaGauge < NOVA_BURST.full) return false;
+    if (this.novaBurstUntil !== null) return false;
+
+    this.novaGauge = 0;
+    this.novaBurstUntil = now + NOVA_BURST.pulseDurationMs;
+    this.burstEvents.push({ x: WORLD.width / 2, y: WORLD.height });
+    this.platform.haptic('combo');
+    return true;
+  }
+
+  isNovaBurstActive(): boolean {
+    return this.novaBurstUntil !== null;
+  }
+
+  /** 펄스 진행 중이면 바닥 중앙을 향한 gravityPulse를 얹은 cfg를, 아니면 기본 PHYSICS를 반환. */
+  private currentPhysicsConfig(now: number): PhysicsConfig {
+    if (this.novaBurstUntil === null) return PHYSICS;
+    if (now >= this.novaBurstUntil) {
+      this.novaBurstUntil = null;
+      return PHYSICS;
+    }
+    return {
+      ...PHYSICS,
+      gravityPulse: {
+        targetX: WORLD.width / 2,
+        targetY: WORLD.height,
+        strength: NOVA_BURST.pulseStrength,
+        extraFriction: NOVA_BURST.pulseExtraFriction,
+      },
+    };
+  }
+
   update(now: number, dt: number): void {
     if (this.state !== 'playing') return;
 
@@ -187,7 +240,7 @@ export class Game {
     this.prevVy.clear();
     for (const body of this.bodies) this.prevVy.set(body.id, body.vy);
 
-    const merges = stepWorld(this.bodies, bounds, dt, PHYSICS);
+    const merges = stepWorld(this.bodies, bounds, dt, this.currentPhysicsConfig(now));
 
     for (const body of this.bodies) {
       const before = this.prevVy.get(body.id);
@@ -212,6 +265,12 @@ export class Game {
       removedIds.add(a.id);
       removedIds.add(b.id);
       this.runMergeCount += 1;
+
+      // 노바 버스트 충전: 머지 1회 = 게이지 +1. 만충 전환 순간에만 select 햅틱 1회(docs/02 §4.6).
+      if (this.novaGauge < NOVA_BURST.full) {
+        this.novaGauge = Math.min(NOVA_BURST.full, this.novaGauge + NOVA_BURST.chargePerMerge);
+        if (this.novaGauge >= NOVA_BURST.full) this.platform.haptic('select');
+      }
 
       if (!this.tutorialDone) {
         this.tutorialDone = true;
