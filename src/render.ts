@@ -413,10 +413,13 @@ const GAMEOVER_BUTTON_H = 46;
 const GAMEOVER_BUTTON_GAP = 14;
 const GAMEOVER_BUTTONS_TOP = WORLD.height * 0.32 + 124;
 
-/** 게임오버 버튼 목록(다시하기/광고 부활/2배/공유). 사용된 광고 보상 버튼은 숨긴다(docs/02 §5). */
+/**
+ * 게임오버 버튼 목록(다시하기/광고 부활/2배/공유). 사용된 광고 보상 버튼은 숨긴다(docs/02 §5).
+ * 2배 사용 후엔 부활도 숨긴다 — 2배는 런의 최종 정산이라 그 이후 부활을 허용하지 않는 정책.
+ */
 export function getGameOverButtons(game: Game): GameOverButton[] {
   const defs: { id: GameOverButton['id']; label: string }[] = [{ id: 'restart', label: '다시하기' }];
-  if (!game.reviveUsed) defs.push({ id: 'revive', label: '광고 보고 부활' });
+  if (!game.reviveUsed && !game.doubleUsed) defs.push({ id: 'revive', label: '광고 보고 부활' });
   if (!game.doubleUsed) defs.push({ id: 'double', label: '광고 보고 점수 2배' });
   defs.push({ id: 'share', label: '공유' });
 

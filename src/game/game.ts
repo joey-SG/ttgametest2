@@ -318,9 +318,13 @@ export class Game {
     this.state = 'playing';
   }
 
-  /** 런당 1회. 스킵(완주 실패)은 소비하지 않는다. 노출/수락 지표는 즉시 기록. */
+  /**
+   * 런당 1회. 스킵(완주 실패)은 소비하지 않는다. 노출/수락 지표는 즉시 기록.
+   * 2배를 이미 사용한 런에서는 허용하지 않는다 — "2배는 런의 최종 정산" 정책(부활→2배는 허용,
+   * 2배→부활은 불허해 2배가 항상 진짜 최종 점수에 걸리게 한다).
+   */
   async reviveWithAd(): Promise<boolean> {
-    if (this.state !== 'gameover' || this.reviveUsed || this.adInFlight) return false;
+    if (this.state !== 'gameover' || this.reviveUsed || this.doubleUsed || this.adInFlight) return false;
     this.adInFlight = true;
     try {
       this.stats.reviveShown += 1;
@@ -367,6 +371,16 @@ export class Game {
     } finally {
       this.adInFlight = false;
     }
+  }
+
+  /**
+   * 게임오버 화면에서 탭을 닫거나 백그라운드로 전환되는 경우를 위한 안전망 — main.ts가
+   * pagehide/visibilitychange에서 호출한다. 게임오버 상태가 아니거나 이미 확정됐으면 no-op이므로
+   * 다음 startPlaying()의 confirmStagedRun() 호출과 이중 확정될 일은 없다.
+   */
+  flushStagedRun(): void {
+    if (this.state !== 'gameover') return;
+    this.confirmStagedRun();
   }
 
   /** 스테이징된 런 기록을 stats에 합산 — 다음 런 시작 시 호출(docs/06 §4). */

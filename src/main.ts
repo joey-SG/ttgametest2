@@ -175,6 +175,14 @@ function handlePointerUp(): void {
   }
 }
 
+// 게임오버 화면에서 탭을 닫거나 백그라운드로 전환하면 다음 startPlaying()의 확정 타이밍이
+// 오지 않아 마지막 런 지표가 영구 유실된다 — pagehide/visibilitychange에서 안전망으로 확정한다.
+// flushStagedRun()은 게임오버 상태가 아니거나 이미 확정됐으면 no-op.
+window.addEventListener('pagehide', () => game.flushStagedRun());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') game.flushStagedRun();
+});
+
 // Pointer Events로 마우스+터치를 통합 처리 (touch-action: none과 병행해 스크롤/줌 차단).
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
